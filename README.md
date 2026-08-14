@@ -1,14 +1,14 @@
 # GIPPO Telegram Bot
 
-A small private Telegram bot that signs in to the GIPPO loyalty cabinet and
-shows:
+A small Telegram bot that signs in to the GIPPO loyalty cabinet and shows:
 
 - the current discount;
 - purchases in the current month;
 - the amount remaining until the next level.
 
 The bot uses Telegram long polling, so it does not need a public HTTP endpoint.
-Access is restricted to an explicit allow-list of Telegram user IDs.
+It supports either deliberately open access or a restricted Telegram user-ID
+allow-list. The production deployment is configured for open access.
 
 ## Commands
 
@@ -43,15 +43,18 @@ token. Do not commit `.env`; it contains both the cabinet password and bot token
 | Variable | Required | Description |
 | --- | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | bot only | Token issued by BotFather |
-| `TELEGRAM_ALLOWED_USER_IDS` | bot only | Comma-separated Telegram numeric user IDs |
+| `TELEGRAM_OPEN_ACCESS` | no | Set to `true` to allow every Telegram user; defaults to `false` |
+| `TELEGRAM_ALLOWED_USER_IDS` | restricted mode | Comma-separated Telegram numeric user IDs |
 | `GIPPO_LOGIN` | yes | GIPPO cabinet login/phone |
 | `GIPPO_PASSWORD` | yes | GIPPO cabinet password |
 | `GIPPO_BASE_URL` | no | Defaults to `https://cabinet.gippo.by` |
 | `GIPPO_TIMEOUT_SECONDS` | no | Request timeout, defaults to 20 seconds |
 | `LOG_LEVEL` | no | Python log level, defaults to `INFO` |
 
-The bot refuses to start if the allow-list is empty. Failed HTTP responses and
-page bodies are not logged, avoiding accidental disclosure of cabinet data.
+The bot refuses to start if open access is disabled and the allow-list is empty.
+With `TELEGRAM_OPEN_ACCESS=true`, anyone who finds the bot can read the shared
+cabinet values. Failed HTTP responses, page bodies, and Bot API request URLs are
+not logged, avoiding accidental disclosure of cabinet data or the bot token.
 
 ## Tests
 

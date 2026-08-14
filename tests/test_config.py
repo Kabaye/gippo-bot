@@ -13,20 +13,46 @@ def test_cabinet_settings_require_credentials(monkeypatch: pytest.MonkeyPatch) -
 
 def test_bot_settings_parse_allow_list(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_OPEN_ACCESS", "false")
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123, 456")
     monkeypatch.setenv("GIPPO_LOGIN", "login")
     monkeypatch.setenv("GIPPO_PASSWORD", "password")
 
     settings = BotSettings.from_environment()
 
+    assert settings.open_access is False
     assert settings.allowed_user_ids == frozenset({123, 456})
 
 
 def test_bot_settings_reject_empty_allow_list(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_OPEN_ACCESS", "false")
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "  ")
     monkeypatch.setenv("GIPPO_LOGIN", "login")
     monkeypatch.setenv("GIPPO_PASSWORD", "password")
 
-    with pytest.raises(SettingsError, match="TELEGRAM_ALLOWED_USER_IDS"):
+    with pytest.raises(SettingsError, match="TELEGRAM_OPEN_ACCESS"):
+        BotSettings.from_environment()
+
+
+def test_bot_settings_allow_explicit_open_access(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_OPEN_ACCESS", "true")
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USER_IDS", raising=False)
+    monkeypatch.setenv("GIPPO_LOGIN", "login")
+    monkeypatch.setenv("GIPPO_PASSWORD", "password")
+
+    settings = BotSettings.from_environment()
+
+    assert settings.open_access is True
+    assert settings.allowed_user_ids == frozenset()
+
+
+def test_bot_settings_reject_invalid_open_access(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_OPEN_ACCESS", "sometimes")
+    monkeypatch.setenv("GIPPO_LOGIN", "login")
+    monkeypatch.setenv("GIPPO_PASSWORD", "password")
+
+    with pytest.raises(SettingsError, match="true or false"):
         BotSettings.from_environment()

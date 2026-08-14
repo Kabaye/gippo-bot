@@ -30,7 +30,7 @@ def _refresh_keyboard() -> InlineKeyboardMarkup:
 
 def _is_authorized(update: Update, settings: BotSettings) -> bool:
     user = update.effective_user
-    return user is not None and user.id in settings.allowed_user_ids
+    return user is not None and (settings.open_access or user.id in settings.allowed_user_ids)
 
 
 async def _deny(update: Update) -> None:
@@ -53,7 +53,7 @@ async def _load_message(client: GippoClient) -> str:
 
 
 async def show_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle `/start` and `/status` for authorized users."""
+    """Handle `/start` and `/status` for users permitted by the access mode."""
 
     settings: BotSettings = context.application.bot_data["settings"]
     if not _is_authorized(update, settings):
@@ -113,5 +113,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         level=getattr(logging, settings.log_level, logging.INFO),
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     application = build_application(settings)
     application.run_polling(allowed_updates=Update.ALL_TYPES)

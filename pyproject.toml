@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "gippo-bot"
 version = "0.1.0"
-description = "Private Telegram bot for checking a GIPPO loyalty cabinet"
+description = "Telegram bot for checking a GIPPO loyalty cabinet"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }

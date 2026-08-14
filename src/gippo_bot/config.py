@@ -25,9 +25,16 @@ def _allowed_user_ids(raw_value: str) -> frozenset[int]:
         result = frozenset(int(value) for value in values if value)
     except ValueError as exc:
         raise SettingsError("TELEGRAM_ALLOWED_USER_IDS must contain numeric IDs") from exc
-    if not result:
-        raise SettingsError("TELEGRAM_ALLOWED_USER_IDS must not be empty")
     return result
+
+
+def _boolean(name: str, *, default: bool = False) -> bool:
+    raw_value = os.getenv(name, str(default)).strip().lower()
+    if raw_value in {"1", "true", "yes", "on"}:
+        return True
+    if raw_value in {"0", "false", "no", "off"}:
+        return False
+    raise SettingsError(f"{name} must be true or false")
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +70,7 @@ class BotSettings:
     """Complete Telegram bot configuration."""
 
     token: str
+    open_access: bool
     allowed_user_ids: frozenset[int]
     cabinet: CabinetSettings
     log_level: str = "INFO"
@@ -71,9 +79,17 @@ class BotSettings:
     def from_environment(cls) -> BotSettings:
         """Load and validate all bot settings from process environment variables."""
 
+        open_access = _boolean("TELEGRAM_OPEN_ACCESS")
+        allowed_user_ids = _allowed_user_ids(os.getenv("TELEGRAM_ALLOWED_USER_IDS", ""))
+        if not open_access and not allowed_user_ids:
+            raise SettingsError(
+                "Set TELEGRAM_OPEN_ACCESS=true or provide TELEGRAM_ALLOWED_USER_IDS"
+            )
+
         return cls(
             token=_required("TELEGRAM_BOT_TOKEN"),
-            allowed_user_ids=_allowed_user_ids(_required("TELEGRAM_ALLOWED_USER_IDS")),
+            open_access=open_access,
+            allowed_user_ids=allowed_user_ids,
             cabinet=CabinetSettings.from_environment(),
             log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO",
         )
