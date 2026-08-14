@@ -1,0 +1,18 @@
+[Unit]
+Description=GIPPO Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/bots/gippo-bot/app
+EnvironmentFile=/srv/bots/gippo-bot/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/srv/bots/gippo-bot/venv/bin/python -m gippo_bot
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
