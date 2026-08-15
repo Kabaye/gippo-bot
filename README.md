@@ -17,6 +17,10 @@ allow-list. The production deployment is configured for open access.
 
 The message also has an **Обновить** button.
 
+The running bot keeps one shared authenticated GIPPO HTTP session for all
+Telegram users. It reuses the same session cookies between status requests and
+automatically signs in again once if the cabinet session expires.
+
 ## Local setup
 
 Python 3.11 or newer is required.

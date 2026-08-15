@@ -1,5 +1,7 @@
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from pathlib import Path
+from threading import Event, Lock
 
 import httpx
 import pytest
@@ -44,8 +46,10 @@ def test_parse_personal_page_rejects_missing_value() -> None:
 
 def test_client_posts_multipart_and_reuses_session_cookie() -> None:
     page = (FIXTURES / "personal.html").read_text(encoding="utf-8")
+    requests: list[tuple[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
         if request.url.path == "/local/ajax/auth.php":
             assert request.method == "POST"
             assert request.headers["x-requested-with"] == "XMLHttpRequest"
@@ -55,13 +59,77 @@ def test_client_posts_multipart_and_reuses_session_cookie() -> None:
         assert "PHPSESSID=valid" in request.headers["cookie"]
         return httpx.Response(200, text=page)
 
-    status = GippoClient(
+    with GippoClient(
         "+375000000000",
         "secret",
         transport=httpx.MockTransport(handler),
-    ).fetch_status()
+    ) as client:
+        status = client.fetch_status()
+        second_status = client.fetch_status()
 
     assert status.monthly_purchases == Decimal("247.27")
+    assert second_status.monthly_purchases == Decimal("247.27")
+    assert requests == [
+        ("POST", "/local/ajax/auth.php"),
+        ("GET", "/personal/"),
+        ("GET", "/personal/"),
+    ]
+
+
+def test_client_reauthenticates_once_when_session_expires() -> None:
+    page = (FIXTURES / "personal.html").read_text(encoding="utf-8")
+    auth_count = 0
+    personal_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal auth_count, personal_count
+        if request.url.path == "/local/ajax/auth.php":
+            auth_count += 1
+            session = f"session{auth_count}"
+            return httpx.Response(200, headers={"set-cookie": f"PHPSESSID={session}; Path=/"})
+
+        personal_count += 1
+        if personal_count == 2:
+            return httpx.Response(
+                200,
+                text='<input name="PROP_RQ[PASSWORD]">',
+                request=httpx.Request("GET", "https://cabinet.gippo.by/index.php"),
+            )
+        expected_session = "session1" if personal_count == 1 else "session2"
+        assert f"PHPSESSID={expected_session}" in request.headers["cookie"]
+        return httpx.Response(200, text=page)
+
+    with GippoClient(
+        "login",
+        "password",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        client.fetch_status()
+        status = client.fetch_status()
+
+    assert status.monthly_purchases == Decimal("247.27")
+    assert auth_count == 2
+    assert personal_count == 3
+
+
+def test_client_rejects_http_auth_failure() -> None:
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        return httpx.Response(401)
+
+    with (
+        GippoClient(
+            "login",
+            "wrong",
+            transport=httpx.MockTransport(handler),
+        ) as client,
+        pytest.raises(GippoAuthenticationError),
+    ):
+        client.fetch_status()
+
+    assert requests == ["/local/ajax/auth.php"]
 
 
 def test_client_rejects_redirected_login_page() -> None:
@@ -74,13 +142,81 @@ def test_client_rejects_redirected_login_page() -> None:
             request=httpx.Request("GET", "https://cabinet.gippo.by/index.php"),
         )
 
-    with pytest.raises(GippoAuthenticationError):
-        GippoClient("login", "wrong", transport=httpx.MockTransport(handler)).fetch_status()
+    with (
+        GippoClient("login", "wrong", transport=httpx.MockTransport(handler)) as client,
+        pytest.raises(GippoAuthenticationError),
+    ):
+        client.fetch_status()
 
 
 def test_client_wraps_network_errors() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection failed", request=request)
 
-    with pytest.raises(GippoError, match="communicate"):
-        GippoClient("login", "password", transport=httpx.MockTransport(handler)).fetch_status()
+    with (
+        GippoClient("login", "password", transport=httpx.MockTransport(handler)) as client,
+        pytest.raises(GippoError, match="communicate"),
+    ):
+        client.fetch_status()
+
+
+def test_client_wraps_personal_http_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/local/ajax/auth.php":
+            return httpx.Response(200, headers={"set-cookie": "PHPSESSID=valid; Path=/"})
+        return httpx.Response(500, request=request)
+
+    with (
+        GippoClient("login", "password", transport=httpx.MockTransport(handler)) as client,
+        pytest.raises(GippoError, match="communicate"),
+    ):
+        client.fetch_status()
+
+
+def test_client_serializes_concurrent_fetches_and_logs_in_once() -> None:
+    page = (FIXTURES / "personal.html").read_text(encoding="utf-8")
+    auth_started = Event()
+    release_auth = Event()
+    count_lock = Lock()
+    auth_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal auth_count
+        if request.url.path == "/local/ajax/auth.php":
+            with count_lock:
+                auth_count += 1
+            auth_started.set()
+            assert release_auth.wait(timeout=5)
+            return httpx.Response(200, headers={"set-cookie": "PHPSESSID=valid; Path=/"})
+        assert "PHPSESSID=valid" in request.headers["cookie"]
+        return httpx.Response(200, text=page)
+
+    with (
+        GippoClient(
+            "login",
+            "password",
+            transport=httpx.MockTransport(handler),
+        ) as client,
+        ThreadPoolExecutor(max_workers=4) as executor,
+    ):
+        futures = [executor.submit(client.fetch_status) for _ in range(4)]
+        assert auth_started.wait(timeout=5)
+        release_auth.set()
+        statuses = [future.result(timeout=5) for future in futures]
+
+    assert auth_count == 1
+    assert all(status.monthly_purchases == Decimal("247.27") for status in statuses)
+
+
+def test_client_close_is_idempotent_and_prevents_future_requests() -> None:
+    client = GippoClient(
+        "login",
+        "password",
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200)),
+    )
+
+    client.close()
+    client.close()
+
+    with pytest.raises(GippoError, match="closed"):
+        client.fetch_status()

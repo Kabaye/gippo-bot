@@ -33,6 +33,14 @@ def _is_authorized(update: Update, settings: BotSettings) -> bool:
     return user is not None and (settings.open_access or user.id in settings.allowed_user_ids)
 
 
+async def _close_cabinet(application: Application) -> None:
+    """Close the shared cabinet session after Telegram shuts down."""
+
+    client: GippoClient | None = application.bot_data.get("gippo_client")
+    if client is not None:
+        client.close()
+
+
 async def _deny(update: Update) -> None:
     if update.callback_query is not None:
         await update.callback_query.answer("Нет доступа", show_alert=True)
@@ -93,7 +101,7 @@ def build_application(settings: BotSettings) -> Application:
         base_url=cabinet.base_url,
         timeout_seconds=cabinet.timeout_seconds,
     )
-    application = ApplicationBuilder().token(settings.token).build()
+    application = ApplicationBuilder().token(settings.token).post_shutdown(_close_cabinet).build()
     application.bot_data["settings"] = settings
     application.bot_data["gippo_client"] = client
     application.add_handler(CommandHandler(["start", "status"], show_status))

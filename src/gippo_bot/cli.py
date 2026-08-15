@@ -19,12 +19,13 @@ def main() -> None:
 
     try:
         settings = CabinetSettings.from_environment()
-        status = GippoClient(
+        with GippoClient(
             settings.login,
             settings.password,
             base_url=settings.base_url,
             timeout_seconds=settings.timeout_seconds,
-        ).fetch_status()
+        ) as client:
+            status = client.fetch_status()
     except (SettingsError, GippoError) as exc:
         raise SystemExit(str(exc)) from exc
 
