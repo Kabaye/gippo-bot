@@ -1,6 +1,8 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+
 from gippo_bot.cabinet import CabinetStatus
 from gippo_bot.formatting import format_status
 
@@ -15,6 +17,31 @@ def test_format_status_uses_russian_decimal_notation() -> None:
 
     assert format_status(status) == (
         "Ваша текущая скидка: 1%\n"
+        "Прогноз скидки на следующий месяц: 5%\n"
         "Покупки в этом месяце: 1 247,20 руб.\n"
         "До следующего уровня: 252,73 руб."
     )
+
+
+@pytest.mark.parametrize(
+    ("monthly_purchases", "expected_discount"),
+    (
+        (Decimal("499.99"), "1%"),
+        (Decimal("500"), "3%"),
+        (Decimal("999.99"), "3%"),
+        (Decimal("1000"), "5%"),
+    ),
+)
+def test_format_status_projects_next_month_discount_at_tier_boundaries(
+    monthly_purchases: Decimal, expected_discount: str
+) -> None:
+    status = CabinetStatus(
+        discount_percent=Decimal("1"),
+        monthly_purchases=monthly_purchases,
+        until_next_level=Decimal("0"),
+        fetched_at=datetime.now(UTC),
+    )
+
+    projected_line = format_status(status).splitlines()[1]
+
+    assert projected_line == f"Прогноз скидки на следующий месяц: {expected_discount}"

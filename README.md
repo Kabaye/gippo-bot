@@ -3,6 +3,7 @@
 A small Telegram bot that signs in to the GIPPO loyalty cabinet and shows:
 
 - the current discount;
+- the projected discount for the next month based on current-month purchases;
 - purchases in the current month;
 - the amount remaining until the next level.
 
