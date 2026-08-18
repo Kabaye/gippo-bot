@@ -6,7 +6,7 @@ A small Telegram bot that signs in to the GIPPO loyalty cabinet and shows:
 - the projected discount for the next month based on current-month purchases;
 - purchases in the current month;
 - the amount remaining until the next level;
-- protected GIPPO and Belmarket loyalty-card images on request.
+- protected GIPPO and Belmarket loyalty-card images with every `/start` response.
 
 The bot uses Telegram long polling, so it does not need a public HTTP endpoint.
 It supports either deliberately open access or a restricted Telegram user-ID
@@ -14,14 +14,11 @@ allow-list. The production deployment is configured for open access.
 
 ## Commands
 
-- `/start` — open the current menu with status and both loyalty cards;
-- `/status` — refresh the values from the GIPPO cabinet.
-- `/gippo` — send the GIPPO «АсобаЯ» card image;
-- `/belmarket` — send the Belmarket «Хамелеон» card image.
+- `/start` — send the current status, the GIPPO card, and then the Belmarket card.
 
-The message also has **Обновить**, **Карта ГИППО**, and **Карта Белмаркет**
-buttons. Refresh buttons from messages created before this menu ask the user to
-call `/start` and do not access the old refresh flow.
+The final Belmarket-card message has one **Обновить** button. It removes itself
+when pressed and resends the complete `/start` response. Every button from an
+earlier menu asks the user to call `/start` and cannot access its old action.
 
 The running bot keeps one shared authenticated GIPPO HTTP session for all
 Telegram users. It reuses the same session cookies between status requests and

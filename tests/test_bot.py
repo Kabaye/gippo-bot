@@ -7,18 +7,18 @@ import pytest
 from telegram.error import BadRequest
 
 from gippo_bot.bot import (
-    BELMARKET_CARD_CALLBACK,
-    GIPPO_CARD_CALLBACK,
-    LEGACY_REFRESH_CALLBACK,
-    LEGACY_REFRESH_MESSAGE,
+    LEGACY_CALLBACK_MESSAGE,
     REFRESH_CALLBACK,
+    _configure_bot_commands,
     _is_authorized,
-    _menu_keyboard,
+    _refresh_keyboard,
+    _send_card,
+    _send_start_messages,
     _validate_card_images,
-    refresh_status,
-    retire_legacy_refresh,
-    show_belmarket_card,
-    show_gippo_card,
+    build_application,
+    refresh_start,
+    retire_legacy_callback,
+    show_start,
 )
 from gippo_bot.cabinet import DEFAULT_BASE_URL
 from gippo_bot.config import BotSettings, CabinetSettings, SettingsError
@@ -58,14 +58,11 @@ def test_restricted_access_uses_allow_list() -> None:
     assert not _is_authorized(SimpleNamespace(effective_user=SimpleNamespace(id=999)), allowed)
 
 
-def test_menu_uses_new_refresh_api_and_both_card_callbacks() -> None:
-    keyboard = _menu_keyboard().inline_keyboard
+def test_latest_message_keyboard_has_only_refresh() -> None:
+    keyboard = _refresh_keyboard().inline_keyboard
 
-    assert REFRESH_CALLBACK != LEGACY_REFRESH_CALLBACK
     assert [button.callback_data for row in keyboard for button in row] == [
         REFRESH_CALLBACK,
-        GIPPO_CARD_CALLBACK,
-        BELMARKET_CARD_CALLBACK,
     ]
 
 
@@ -89,90 +86,158 @@ def test_card_images_are_required_before_application_start(tmp_path: Path) -> No
     _validate_card_images(settings)
 
 
-def test_legacy_refresh_replaces_old_message_with_start_instruction() -> None:
+def test_legacy_callback_is_removed_and_asks_for_start() -> None:
     settings = _settings(open_access=True, allowed_user_ids=frozenset())
-    query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())
+    query = SimpleNamespace(answer=AsyncMock(), edit_message_reply_markup=AsyncMock())
     update = SimpleNamespace(
         effective_user=SimpleNamespace(id=999),
         callback_query=query,
     )
     context = SimpleNamespace(application=SimpleNamespace(bot_data={"settings": settings}))
 
-    asyncio.run(retire_legacy_refresh(update, context))
+    asyncio.run(retire_legacy_callback(update, context))
 
-    query.answer.assert_awaited_once_with(
-        "Вызовите /start, чтобы открыть новое меню.", show_alert=True
-    )
-    query.edit_message_text.assert_awaited_once_with(LEGACY_REFRESH_MESSAGE)
+    query.answer.assert_awaited_once_with(LEGACY_CALLBACK_MESSAGE, show_alert=True)
+    query.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
 
 
-def test_new_refresh_accepts_unchanged_status_without_error(
+def test_refresh_removes_used_button_and_resends_complete_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = _settings(open_access=True, allowed_user_ids=frozenset())
     query = SimpleNamespace(
         answer=AsyncMock(),
-        edit_message_text=AsyncMock(side_effect=BadRequest("Message is not modified")),
+        edit_message_reply_markup=AsyncMock(),
     )
     update = SimpleNamespace(
         effective_user=SimpleNamespace(id=999),
         callback_query=query,
     )
-    context = SimpleNamespace(
-        application=SimpleNamespace(bot_data={"settings": settings, "gippo_client": object()})
-    )
-    monkeypatch.setattr("gippo_bot.bot._load_message", AsyncMock(return_value="same status"))
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={"settings": settings}))
+    resend = AsyncMock()
+    monkeypatch.setattr("gippo_bot.bot._send_start_messages", resend)
 
-    asyncio.run(refresh_status(update, context))
+    asyncio.run(refresh_start(update, context))
 
     query.answer.assert_awaited_once_with("Обновляю…")
-    query.edit_message_text.assert_awaited_once()
+    query.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
+    resend.assert_awaited_once_with(update, context)
 
 
-@pytest.mark.parametrize(
-    ("handler", "selected_card", "expected_caption", "uses_callback"),
-    (
-        (show_gippo_card, "gippo", "Карта ГИППО «АсобаЯ»", True),
-        (show_belmarket_card, "belmarket", "Карта Белмаркет «Хамелеон»", False),
-    ),
-)
-def test_card_handlers_send_configured_original_image(
-    tmp_path: Path,
-    handler: object,
-    selected_card: str,
-    expected_caption: str,
-    uses_callback: bool,
+def test_already_used_refresh_does_not_resend_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(open_access=True, allowed_user_ids=frozenset())
+    query = SimpleNamespace(
+        answer=AsyncMock(),
+        edit_message_reply_markup=AsyncMock(side_effect=BadRequest("Message is not modified")),
+    )
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=999),
+        callback_query=query,
+    )
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={"settings": settings}))
+    resend = AsyncMock()
+    monkeypatch.setattr("gippo_bot.bot._send_start_messages", resend)
+
+    asyncio.run(refresh_start(update, context))
+
+    resend.assert_not_awaited()
+
+
+def test_start_sends_complete_response(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    settings = _settings(open_access=True, allowed_user_ids=frozenset())
+    update = SimpleNamespace(effective_user=SimpleNamespace(id=999))
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={"settings": settings}))
+    send_complete = AsyncMock()
+    monkeypatch.setattr("gippo_bot.bot._send_start_messages", send_complete)
+
+    asyncio.run(show_start(update, context))
+
+    send_complete.assert_awaited_once_with(update, context)
+
+
+def test_start_messages_order_status_then_cards_with_refresh_only_on_latest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(open_access=True, allowed_user_ids=frozenset())
+    update = SimpleNamespace()
+    context = SimpleNamespace(application=SimpleNamespace(bot_data={"settings": settings}))
+    events: list[str] = []
+
+    async def record_status(*_args: object) -> None:
+        events.append("status")
+
+    send_card = AsyncMock()
+    monkeypatch.setattr("gippo_bot.bot._send_status", record_status)
+    monkeypatch.setattr("gippo_bot.bot._send_card", send_card)
+
+    asyncio.run(_send_start_messages(update, context))
+
+    assert events == ["status"]
+    assert send_card.await_count == 2
+    gippo_call, belmarket_call = send_card.await_args_list
+    assert gippo_call.kwargs == {
+        "image_path": settings.gippo_card_image_path,
+        "caption": "Карта ГИППО «АсобаЯ»",
+    }
+    assert belmarket_call.kwargs["image_path"] == settings.belmarket_card_image_path
+    assert belmarket_call.kwargs["caption"] == "Карта Белмаркет «Хамелеон»"
+    assert belmarket_call.kwargs["reply_markup"] == _refresh_keyboard()
+
+
+def test_send_card_preserves_original_bytes_and_attaches_markup(tmp_path: Path) -> None:
+    card = tmp_path / "card.png"
+    card.write_bytes(b"original-image")
+    captured: dict[str, object] = {}
+
+    async def capture_photo(*, photo: object, caption: str, reply_markup: object) -> None:
+        captured.update(image=photo.read(), caption=caption, reply_markup=reply_markup)
+
+    message = SimpleNamespace(reply_photo=AsyncMock(side_effect=capture_photo))
+    update = SimpleNamespace(effective_message=message)
+    markup = _refresh_keyboard()
+
+    asyncio.run(_send_card(update, image_path=card, caption="card", reply_markup=markup))
+
+    assert captured == {
+        "image": b"original-image",
+        "caption": "card",
+        "reply_markup": markup,
+    }
+
+
+def test_command_menu_contains_only_start() -> None:
+    set_commands = AsyncMock()
+    application = SimpleNamespace(bot=SimpleNamespace(set_my_commands=set_commands))
+
+    asyncio.run(_configure_bot_commands(application))
+
+    commands = set_commands.await_args.args[0]
+    assert [(command.command, command.description) for command in commands] == [
+        ("start", "Показать скидку и обе карты")
+    ]
+
+
+def test_application_registers_only_start_and_refresh_actions(tmp_path: Path) -> None:
+    png_signature = b"\x89PNG\r\n\x1a\n"
     gippo_card = tmp_path / "gippo.png"
     belmarket_card = tmp_path / "belmarket.png"
-    gippo_card.write_bytes(b"original-gippo-image")
-    belmarket_card.write_bytes(b"original-belmarket-image")
+    gippo_card.write_bytes(png_signature)
+    belmarket_card.write_bytes(png_signature)
     settings = _settings(
         open_access=True,
         allowed_user_ids=frozenset(),
         gippo_card_image_path=gippo_card,
         belmarket_card_image_path=belmarket_card,
     )
-    captured: dict[str, object] = {}
 
-    async def capture_photo(*, photo: object, caption: str) -> None:
-        captured["image"] = photo.read()
-        captured["caption"] = caption
-
-    message = SimpleNamespace(reply_photo=AsyncMock(side_effect=capture_photo))
-    query = SimpleNamespace(answer=AsyncMock()) if uses_callback else None
-    update = SimpleNamespace(
-        effective_user=SimpleNamespace(id=999),
-        effective_message=message,
-        callback_query=query,
-    )
-    context = SimpleNamespace(application=SimpleNamespace(bot_data={"settings": settings}))
-
-    asyncio.run(handler(update, context))
-
-    assert captured == {
-        "image": f"original-{selected_card}-image".encode(),
-        "caption": expected_caption,
-    }
-    if query is not None:
-        query.answer.assert_awaited_once_with("Отправляю карту…")
+    application = build_application(settings)
+    try:
+        assert [handler.callback.__name__ for handler in application.handlers[0]] == [
+            "show_start",
+            "refresh_start",
+            "retire_legacy_callback",
+        ]
+    finally:
+        application.bot_data["gippo_client"].close()

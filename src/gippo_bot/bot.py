@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     Application,
@@ -21,25 +22,20 @@ from .config import BotSettings, SettingsError
 from .formatting import format_status
 
 LOGGER = logging.getLogger(__name__)
-LEGACY_REFRESH_CALLBACK = "refresh_status"
-REFRESH_CALLBACK = "refresh_status:v2"
-GIPPO_CARD_CALLBACK = "show_card:gippo:v2"
-BELMARKET_CARD_CALLBACK = "show_card:belmarket:v2"
-LEGACY_REFRESH_MESSAGE = (
-    "Это меню устарело. Пожалуйста, снова вызовите /start, "
-    "чтобы открыть новое меню с картами ГИППО и Белмаркет."
+REFRESH_CALLBACK = "restart_start:v3"
+LEGACY_CALLBACKS = (
+    "refresh_status",
+    "refresh_status:v2",
+    "show_card:gippo:v2",
+    "show_card:belmarket:v2",
 )
+LEGACY_CALLBACK_PATTERN = "^(?:" + "|".join(re.escape(value) for value in LEGACY_CALLBACKS) + ")$"
+LEGACY_CALLBACK_MESSAGE = "Это меню устарело. Вызовите /start."
 
 
-def _menu_keyboard() -> InlineKeyboardMarkup:
+def _refresh_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("Обновить", callback_data=REFRESH_CALLBACK)],
-            [
-                InlineKeyboardButton("Карта ГИППО", callback_data=GIPPO_CARD_CALLBACK),
-                InlineKeyboardButton("Карта Белмаркет", callback_data=BELMARKET_CARD_CALLBACK),
-            ],
-        ]
+        [[InlineKeyboardButton("Обновить", callback_data=REFRESH_CALLBACK)]]
     )
 
 
@@ -54,6 +50,14 @@ async def _close_cabinet(application: Application) -> None:
     client: GippoClient | None = application.bot_data.get("gippo_client")
     if client is not None:
         client.close()
+
+
+async def _configure_bot_commands(application: Application) -> None:
+    """Expose only `/start` in Telegram's command menu."""
+
+    await application.bot.set_my_commands(
+        [BotCommand(command="start", description="Показать скидку и обе карты")]
+    )
 
 
 async def _deny(update: Update) -> None:
@@ -94,75 +98,62 @@ def _validate_card_images(settings: BotSettings) -> None:
 
 async def _send_card(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
     *,
     image_path: Path,
     caption: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
-    settings: BotSettings = context.application.bot_data["settings"]
-    if not _is_authorized(update, settings):
-        await _deny(update)
-        return
-
-    query = update.callback_query
-    if query is not None:
-        try:
-            await query.answer("Отправляю карту…")
-        except TelegramError:
-            LOGGER.warning("Could not acknowledge a loyalty-card callback", exc_info=True)
-
     message = update.effective_message
     if message is None:
         return
 
     try:
         with image_path.open("rb") as image:
-            await message.reply_photo(photo=image, caption=caption)
+            await message.reply_photo(photo=image, caption=caption, reply_markup=reply_markup)
     except (OSError, TelegramError):
         LOGGER.exception("Could not send loyalty card image")
-        await message.reply_text("Не удалось отправить карту. Попробуйте ещё раз позже.")
+        await message.reply_text(
+            "Не удалось отправить карту. Попробуйте ещё раз позже.",
+            reply_markup=reply_markup,
+        )
 
 
-async def show_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle `/start` and `/status` for users permitted by the access mode."""
-
-    settings: BotSettings = context.application.bot_data["settings"]
-    if not _is_authorized(update, settings):
-        await _deny(update)
-        return
-
+async def _send_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     client: GippoClient = context.application.bot_data["gippo_client"]
     message = await _load_message(client)
     if update.effective_message is not None:
-        await update.effective_message.reply_text(message, reply_markup=_menu_keyboard())
+        await update.effective_message.reply_text(message)
 
 
-async def show_gippo_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send the configured GIPPO loyalty-card image."""
-
+async def _send_start_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings: BotSettings = context.application.bot_data["settings"]
+    await _send_status(update, context)
     await _send_card(
         update,
-        context,
         image_path=settings.gippo_card_image_path,
         caption="Карта ГИППО «АсобаЯ»",
     )
-
-
-async def show_belmarket_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send the configured Belmarket loyalty-card image."""
-
-    settings: BotSettings = context.application.bot_data["settings"]
     await _send_card(
         update,
-        context,
         image_path=settings.belmarket_card_image_path,
         caption="Карта Белмаркет «Хамелеон»",
+        reply_markup=_refresh_keyboard(),
     )
 
 
-async def refresh_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Refresh an existing status message after its inline button is pressed."""
+async def show_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle `/start` by sending status followed by both loyalty cards."""
+
+    settings: BotSettings = context.application.bot_data["settings"]
+    if not _is_authorized(update, settings):
+        await _deny(update)
+        return
+
+    await _send_start_messages(update, context)
+
+
+async def refresh_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Remove the used refresh button and resend the complete `/start` response."""
 
     settings: BotSettings = context.application.bot_data["settings"]
     if not _is_authorized(update, settings):
@@ -172,18 +163,21 @@ async def refresh_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     if query is None:
         return
-    await query.answer("Обновляю…")
-    client: GippoClient = context.application.bot_data["gippo_client"]
-    message = await _load_message(client)
     try:
-        await query.edit_message_text(message, reply_markup=_menu_keyboard())
+        await query.answer("Обновляю…")
+    except TelegramError:
+        LOGGER.warning("Could not acknowledge the refresh callback", exc_info=True)
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
     except BadRequest as exc:
-        if "message is not modified" not in str(exc).lower():
-            raise
+        if "message is not modified" in str(exc).lower():
+            return
+        raise
+    await _send_start_messages(update, context)
 
 
-async def retire_legacy_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Retire refresh buttons from messages created before the card menu existed."""
+async def retire_legacy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Retire every command button from earlier bot menus."""
 
     settings: BotSettings = context.application.bot_data["settings"]
     if not _is_authorized(update, settings):
@@ -194,13 +188,13 @@ async def retire_legacy_refresh(update: Update, context: ContextTypes.DEFAULT_TY
     if query is None:
         return
     try:
-        await query.answer("Вызовите /start, чтобы открыть новое меню.", show_alert=True)
+        await query.answer(LEGACY_CALLBACK_MESSAGE, show_alert=True)
     except TelegramError:
-        LOGGER.warning("Could not acknowledge a legacy refresh callback", exc_info=True)
+        LOGGER.warning("Could not acknowledge a legacy callback", exc_info=True)
     try:
-        await query.edit_message_text(LEGACY_REFRESH_MESSAGE)
+        await query.edit_message_reply_markup(reply_markup=None)
     except TelegramError:
-        LOGGER.warning("Could not replace a legacy refresh message", exc_info=True)
+        LOGGER.warning("Could not remove a legacy command button", exc_info=True)
 
 
 def build_application(settings: BotSettings) -> Application:
@@ -214,21 +208,19 @@ def build_application(settings: BotSettings) -> Application:
         base_url=cabinet.base_url,
         timeout_seconds=cabinet.timeout_seconds,
     )
-    application = ApplicationBuilder().token(settings.token).post_shutdown(_close_cabinet).build()
+    application = (
+        ApplicationBuilder()
+        .token(settings.token)
+        .post_init(_configure_bot_commands)
+        .post_shutdown(_close_cabinet)
+        .build()
+    )
     application.bot_data["settings"] = settings
     application.bot_data["gippo_client"] = client
-    application.add_handler(CommandHandler(["start", "status"], show_status))
-    application.add_handler(CommandHandler("gippo", show_gippo_card))
-    application.add_handler(CommandHandler("belmarket", show_belmarket_card))
-    application.add_handler(CallbackQueryHandler(refresh_status, pattern=f"^{REFRESH_CALLBACK}$"))
+    application.add_handler(CommandHandler("start", show_start))
+    application.add_handler(CallbackQueryHandler(refresh_start, pattern=f"^{REFRESH_CALLBACK}$"))
     application.add_handler(
-        CallbackQueryHandler(show_gippo_card, pattern=f"^{GIPPO_CARD_CALLBACK}$")
-    )
-    application.add_handler(
-        CallbackQueryHandler(show_belmarket_card, pattern=f"^{BELMARKET_CARD_CALLBACK}$")
-    )
-    application.add_handler(
-        CallbackQueryHandler(retire_legacy_refresh, pattern=f"^{LEGACY_REFRESH_CALLBACK}$")
+        CallbackQueryHandler(retire_legacy_callback, pattern=LEGACY_CALLBACK_PATTERN)
     )
     return application
 
