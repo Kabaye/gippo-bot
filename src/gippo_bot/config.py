@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from .cabinet import DEFAULT_BASE_URL
+
+DEFAULT_GIPPO_CARD_IMAGE_PATH = Path("/srv/bots/gippo-bot/private/cards/gippo.png")
+DEFAULT_BELMARKET_CARD_IMAGE_PATH = Path("/srv/bots/gippo-bot/private/cards/belmarket.png")
 
 
 class SettingsError(ValueError):
@@ -74,6 +78,8 @@ class BotSettings:
     allowed_user_ids: frozenset[int]
     cabinet: CabinetSettings
     log_level: str = "INFO"
+    gippo_card_image_path: Path = DEFAULT_GIPPO_CARD_IMAGE_PATH
+    belmarket_card_image_path: Path = DEFAULT_BELMARKET_CARD_IMAGE_PATH
 
     @classmethod
     def from_environment(cls) -> BotSettings:
@@ -92,4 +98,10 @@ class BotSettings:
             allowed_user_ids=allowed_user_ids,
             cabinet=CabinetSettings.from_environment(),
             log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO",
+            gippo_card_image_path=Path(
+                os.getenv("GIPPO_CARD_IMAGE_PATH", str(DEFAULT_GIPPO_CARD_IMAGE_PATH))
+            ).expanduser(),
+            belmarket_card_image_path=Path(
+                os.getenv("BELMARKET_CARD_IMAGE_PATH", str(DEFAULT_BELMARKET_CARD_IMAGE_PATH))
+            ).expanduser(),
         )

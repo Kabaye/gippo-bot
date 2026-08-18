@@ -5,7 +5,8 @@ A small Telegram bot that signs in to the GIPPO loyalty cabinet and shows:
 - the current discount;
 - the projected discount for the next month based on current-month purchases;
 - purchases in the current month;
-- the amount remaining until the next level.
+- the amount remaining until the next level;
+- protected GIPPO and Belmarket loyalty-card images on request.
 
 The bot uses Telegram long polling, so it does not need a public HTTP endpoint.
 It supports either deliberately open access or a restricted Telegram user-ID
@@ -13,10 +14,14 @@ allow-list. The production deployment is configured for open access.
 
 ## Commands
 
-- `/start` — open the bot and show the current values;
+- `/start` — open the current menu with status and both loyalty cards;
 - `/status` — refresh the values from the GIPPO cabinet.
+- `/gippo` — send the GIPPO «АсобаЯ» card image;
+- `/belmarket` — send the Belmarket «Хамелеон» card image.
 
-The message also has an **Обновить** button.
+The message also has **Обновить**, **Карта ГИППО**, and **Карта Белмаркет**
+buttons. Refresh buttons from messages created before this menu ask the user to
+call `/start` and do not access the old refresh flow.
 
 The running bot keeps one shared authenticated GIPPO HTTP session for all
 Telegram users. It reuses the same session cookies between status requests and
@@ -54,12 +59,16 @@ token. Do not commit `.env`; it contains both the cabinet password and bot token
 | `GIPPO_PASSWORD` | yes | GIPPO cabinet password |
 | `GIPPO_BASE_URL` | no | Defaults to `https://cabinet.gippo.by` |
 | `GIPPO_TIMEOUT_SECONDS` | no | Request timeout, defaults to 20 seconds |
+| `GIPPO_CARD_IMAGE_PATH` | no | GIPPO card PNG; defaults to `/srv/bots/gippo-bot/private/cards/gippo.png` |
+| `BELMARKET_CARD_IMAGE_PATH` | no | Belmarket card PNG; defaults to `/srv/bots/gippo-bot/private/cards/belmarket.png` |
 | `LOG_LEVEL` | no | Python log level, defaults to `INFO` |
 
 The bot refuses to start if open access is disabled and the allow-list is empty.
 With `TELEGRAM_OPEN_ACCESS=true`, anyone who finds the bot can read the shared
 cabinet values. Failed HTTP responses, page bodies, and Bot API request URLs are
 not logged, avoiding accidental disclosure of cabinet data or the bot token.
+Card images contain account-linked barcodes and must be kept outside the public
+repository in owner-readable files.
 
 ## Tests
 

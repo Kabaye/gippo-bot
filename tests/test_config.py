@@ -56,3 +56,21 @@ def test_bot_settings_reject_invalid_open_access(monkeypatch: pytest.MonkeyPatch
 
     with pytest.raises(SettingsError, match="true or false"):
         BotSettings.from_environment()
+
+
+def test_bot_settings_accept_card_image_path_overrides(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    gippo_card = tmp_path / "gippo.png"
+    belmarket_card = tmp_path / "belmarket.png"
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_OPEN_ACCESS", "true")
+    monkeypatch.setenv("GIPPO_LOGIN", "login")
+    monkeypatch.setenv("GIPPO_PASSWORD", "password")
+    monkeypatch.setenv("GIPPO_CARD_IMAGE_PATH", str(gippo_card))
+    monkeypatch.setenv("BELMARKET_CARD_IMAGE_PATH", str(belmarket_card))
+
+    settings = BotSettings.from_environment()
+
+    assert settings.gippo_card_image_path == gippo_card
+    assert settings.belmarket_card_image_path == belmarket_card
