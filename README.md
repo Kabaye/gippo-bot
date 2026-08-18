@@ -14,11 +14,11 @@ allow-list. The production deployment is configured for open access.
 
 ## Commands
 
-- `/start` — send the current status, the GIPPO card, and then the Belmarket card.
+- `/start` — send the GIPPO card, the Belmarket card, and then current status.
 
-The final Belmarket-card message has one **Обновить** button. It removes itself
-when pressed and resends the complete `/start` response. Every button from an
-earlier menu asks the user to call `/start` and cannot access its old action.
+The final status message has one **Обновить** button. It updates only that text
+message; card images are not sent again. Every button from an earlier menu asks
+the user to call `/start` and cannot access its old action.
 
 The running bot keeps one shared authenticated GIPPO HTTP session for all
 Telegram users. It reuses the same session cookies between status requests and

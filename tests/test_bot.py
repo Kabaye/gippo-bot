@@ -16,7 +16,7 @@ from gippo_bot.bot import (
     _send_start_messages,
     _validate_card_images,
     build_application,
-    refresh_start,
+    refresh_status,
     retire_legacy_callback,
     show_start,
 )
@@ -101,46 +101,50 @@ def test_legacy_callback_is_removed_and_asks_for_start() -> None:
     query.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
 
 
-def test_refresh_removes_used_button_and_resends_complete_start(
+def test_refresh_updates_only_existing_status_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = _settings(open_access=True, allowed_user_ids=frozenset())
     query = SimpleNamespace(
         answer=AsyncMock(),
-        edit_message_reply_markup=AsyncMock(),
+        edit_message_text=AsyncMock(),
     )
     update = SimpleNamespace(
         effective_user=SimpleNamespace(id=999),
         callback_query=query,
     )
-    context = SimpleNamespace(application=SimpleNamespace(bot_data={"settings": settings}))
-    resend = AsyncMock()
-    monkeypatch.setattr("gippo_bot.bot._send_start_messages", resend)
+    context = SimpleNamespace(
+        application=SimpleNamespace(bot_data={"settings": settings, "gippo_client": object()})
+    )
+    monkeypatch.setattr("gippo_bot.bot._load_message", AsyncMock(return_value="new status"))
+    send_card = AsyncMock()
+    monkeypatch.setattr("gippo_bot.bot._send_card", send_card)
 
-    asyncio.run(refresh_start(update, context))
+    asyncio.run(refresh_status(update, context))
 
     query.answer.assert_awaited_once_with("Обновляю…")
-    query.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
-    resend.assert_awaited_once_with(update, context)
+    query.edit_message_text.assert_awaited_once_with("new status", reply_markup=_refresh_keyboard())
+    send_card.assert_not_awaited()
 
 
-def test_already_used_refresh_does_not_resend_again(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unchanged_refresh_status_does_not_fail(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(open_access=True, allowed_user_ids=frozenset())
     query = SimpleNamespace(
         answer=AsyncMock(),
-        edit_message_reply_markup=AsyncMock(side_effect=BadRequest("Message is not modified")),
+        edit_message_text=AsyncMock(side_effect=BadRequest("Message is not modified")),
     )
     update = SimpleNamespace(
         effective_user=SimpleNamespace(id=999),
         callback_query=query,
     )
-    context = SimpleNamespace(application=SimpleNamespace(bot_data={"settings": settings}))
-    resend = AsyncMock()
-    monkeypatch.setattr("gippo_bot.bot._send_start_messages", resend)
+    context = SimpleNamespace(
+        application=SimpleNamespace(bot_data={"settings": settings, "gippo_client": object()})
+    )
+    monkeypatch.setattr("gippo_bot.bot._load_message", AsyncMock(return_value="same status"))
 
-    asyncio.run(refresh_start(update, context))
+    asyncio.run(refresh_status(update, context))
 
-    resend.assert_not_awaited()
+    query.edit_message_text.assert_awaited_once()
 
 
 def test_start_sends_complete_response(
@@ -157,24 +161,31 @@ def test_start_sends_complete_response(
     send_complete.assert_awaited_once_with(update, context)
 
 
-def test_start_messages_order_status_then_cards_with_refresh_only_on_latest(
+def test_start_messages_order_cards_then_status_with_refresh_only_on_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = _settings(open_access=True, allowed_user_ids=frozenset())
     update = SimpleNamespace()
     context = SimpleNamespace(application=SimpleNamespace(bot_data={"settings": settings}))
     events: list[str] = []
+    status_markup: list[object] = []
 
-    async def record_status(*_args: object) -> None:
+    async def record_status(*_args: object, reply_markup: object | None = None) -> None:
         events.append("status")
+        status_markup.append(reply_markup)
 
-    send_card = AsyncMock()
+    async def record_card(*_args: object, image_path: Path, caption: str) -> None:
+        del image_path
+        events.append(caption)
+
+    send_card = AsyncMock(side_effect=record_card)
     monkeypatch.setattr("gippo_bot.bot._send_status", record_status)
     monkeypatch.setattr("gippo_bot.bot._send_card", send_card)
 
     asyncio.run(_send_start_messages(update, context))
 
-    assert events == ["status"]
+    assert events == ["Карта ГИППО «АсобаЯ»", "Карта Белмаркет «Хамелеон»", "status"]
+    assert status_markup == [_refresh_keyboard()]
     assert send_card.await_count == 2
     gippo_call, belmarket_call = send_card.await_args_list
     assert gippo_call.kwargs == {
@@ -183,27 +194,23 @@ def test_start_messages_order_status_then_cards_with_refresh_only_on_latest(
     }
     assert belmarket_call.kwargs["image_path"] == settings.belmarket_card_image_path
     assert belmarket_call.kwargs["caption"] == "Карта Белмаркет «Хамелеон»"
-    assert belmarket_call.kwargs["reply_markup"] == _refresh_keyboard()
 
 
-def test_send_card_preserves_original_bytes_and_attaches_markup(tmp_path: Path) -> None:
+def test_send_card_preserves_original_bytes_without_buttons(tmp_path: Path) -> None:
     card = tmp_path / "card.png"
     card.write_bytes(b"original-image")
     captured: dict[str, object] = {}
 
-    async def capture_photo(*, photo: object, caption: str, reply_markup: object) -> None:
-        captured.update(image=photo.read(), caption=caption, reply_markup=reply_markup)
+    async def capture_photo(*, photo: object, caption: str) -> None:
+        captured.update(image=photo.read(), caption=caption)
 
     message = SimpleNamespace(reply_photo=AsyncMock(side_effect=capture_photo))
     update = SimpleNamespace(effective_message=message)
-    markup = _refresh_keyboard()
-
-    asyncio.run(_send_card(update, image_path=card, caption="card", reply_markup=markup))
+    asyncio.run(_send_card(update, image_path=card, caption="card"))
 
     assert captured == {
         "image": b"original-image",
         "caption": "card",
-        "reply_markup": markup,
     }
 
 
@@ -236,7 +243,7 @@ def test_application_registers_only_start_and_refresh_actions(tmp_path: Path) ->
     try:
         assert [handler.callback.__name__ for handler in application.handlers[0]] == [
             "show_start",
-            "refresh_start",
+            "refresh_status",
             "retire_legacy_callback",
         ]
     finally:

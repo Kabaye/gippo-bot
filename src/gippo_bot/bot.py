@@ -22,10 +22,11 @@ from .config import BotSettings, SettingsError
 from .formatting import format_status
 
 LOGGER = logging.getLogger(__name__)
-REFRESH_CALLBACK = "restart_start:v3"
+REFRESH_CALLBACK = "refresh_status:v3"
 LEGACY_CALLBACKS = (
     "refresh_status",
     "refresh_status:v2",
+    "restart_start:v3",
     "show_card:gippo:v2",
     "show_card:belmarket:v2",
 )
@@ -101,7 +102,6 @@ async def _send_card(
     *,
     image_path: Path,
     caption: str,
-    reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
     message = update.effective_message
     if message is None:
@@ -109,25 +109,26 @@ async def _send_card(
 
     try:
         with image_path.open("rb") as image:
-            await message.reply_photo(photo=image, caption=caption, reply_markup=reply_markup)
+            await message.reply_photo(photo=image, caption=caption)
     except (OSError, TelegramError):
         LOGGER.exception("Could not send loyalty card image")
-        await message.reply_text(
-            "Не удалось отправить карту. Попробуйте ещё раз позже.",
-            reply_markup=reply_markup,
-        )
+        await message.reply_text("Не удалось отправить карту. Попробуйте ещё раз позже.")
 
 
-async def _send_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _send_status(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
     client: GippoClient = context.application.bot_data["gippo_client"]
     message = await _load_message(client)
     if update.effective_message is not None:
-        await update.effective_message.reply_text(message)
+        await update.effective_message.reply_text(message, reply_markup=reply_markup)
 
 
 async def _send_start_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings: BotSettings = context.application.bot_data["settings"]
-    await _send_status(update, context)
     await _send_card(
         update,
         image_path=settings.gippo_card_image_path,
@@ -137,12 +138,12 @@ async def _send_start_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         update,
         image_path=settings.belmarket_card_image_path,
         caption="Карта Белмаркет «Хамелеон»",
-        reply_markup=_refresh_keyboard(),
     )
+    await _send_status(update, context, reply_markup=_refresh_keyboard())
 
 
 async def show_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle `/start` by sending status followed by both loyalty cards."""
+    """Handle `/start` by sending both loyalty cards followed by status."""
 
     settings: BotSettings = context.application.bot_data["settings"]
     if not _is_authorized(update, settings):
@@ -152,8 +153,8 @@ async def show_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await _send_start_messages(update, context)
 
 
-async def refresh_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Remove the used refresh button and resend the complete `/start` response."""
+async def refresh_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Update only the existing status message after its button is pressed."""
 
     settings: BotSettings = context.application.bot_data["settings"]
     if not _is_authorized(update, settings):
@@ -167,13 +168,13 @@ async def refresh_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await query.answer("Обновляю…")
     except TelegramError:
         LOGGER.warning("Could not acknowledge the refresh callback", exc_info=True)
+    client: GippoClient = context.application.bot_data["gippo_client"]
+    message = await _load_message(client)
     try:
-        await query.edit_message_reply_markup(reply_markup=None)
+        await query.edit_message_text(message, reply_markup=_refresh_keyboard())
     except BadRequest as exc:
-        if "message is not modified" in str(exc).lower():
-            return
-        raise
-    await _send_start_messages(update, context)
+        if "message is not modified" not in str(exc).lower():
+            raise
 
 
 async def retire_legacy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -218,7 +219,7 @@ def build_application(settings: BotSettings) -> Application:
     application.bot_data["settings"] = settings
     application.bot_data["gippo_client"] = client
     application.add_handler(CommandHandler("start", show_start))
-    application.add_handler(CallbackQueryHandler(refresh_start, pattern=f"^{REFRESH_CALLBACK}$"))
+    application.add_handler(CallbackQueryHandler(refresh_status, pattern=f"^{REFRESH_CALLBACK}$"))
     application.add_handler(
         CallbackQueryHandler(retire_legacy_callback, pattern=LEGACY_CALLBACK_PATTERN)
     )
