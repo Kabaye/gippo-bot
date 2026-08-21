@@ -45,3 +45,19 @@ def test_format_status_projects_next_month_discount_at_tier_boundaries(
     projected_line = format_status(status).splitlines()[1]
 
     assert projected_line == f"Прогноз скидки на следующий месяц: {expected_discount}"
+
+
+def test_format_status_projects_live_grouped_purchase_value() -> None:
+    status = CabinetStatus(
+        discount_percent=Decimal("1"),
+        monthly_purchases=Decimal("1022"),
+        until_next_level=Decimal("0"),
+        fetched_at=datetime.now(UTC),
+    )
+
+    assert format_status(status) == (
+        "Ваша текущая скидка: 1%\n"
+        "Прогноз скидки на следующий месяц: 5%\n"
+        "Покупки в этом месяце: 1 022,00 руб.\n"
+        "До следующего уровня: 0,00 руб."
+    )

@@ -36,26 +36,38 @@ class CabinetStatus:
     fetched_at: datetime
 
 
+_NUMERIC_VALUE = r"([0-9][0-9\s.,]*)(?![0-9.,])"
+
 _VALUE_PATTERNS = {
     "discount_percent": re.compile(
-        r"Ваша\s+текущая\s+скидка\s*([0-9]+(?:[.,][0-9]+)?)\s*%",
+        rf"Ваша\s+текущая\s+скидка\s*{_NUMERIC_VALUE}\s*%",
         re.IGNORECASE,
     ),
     "monthly_purchases": re.compile(
         r"Ваши\s+покупки\s+в\s+этом\s+месяце\s*"
-        r"([0-9][0-9\s]*(?:[.,][0-9]+)?)",
+        rf"{_NUMERIC_VALUE}",
         re.IGNORECASE,
     ),
     "until_next_level": re.compile(
         r"До\s+следующего\s+уровня\s+осталось\s*"
-        r"([0-9][0-9\s]*(?:[.,][0-9]+)?)",
+        rf"{_NUMERIC_VALUE}",
         re.IGNORECASE,
     ),
 }
 
 
 def _to_decimal(raw_value: str) -> Decimal:
-    normalized = raw_value.replace("\xa0", "").replace(" ", "").replace(",", ".")
+    raw_value = raw_value.strip()
+    if re.fullmatch(r"[0-9]{1,3}(?:\s+[0-9]{3})+(?:[.,][0-9]{1,2})?", raw_value):
+        normalized = re.sub(r"\s+", "", raw_value).replace(",", ".")
+    elif re.fullmatch(r"[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]{1,2})?", raw_value):
+        normalized = raw_value.replace(",", "")
+    elif re.fullmatch(r"[0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{1,2})?", raw_value):
+        normalized = raw_value.replace(".", "").replace(",", ".")
+    elif re.fullmatch(r"[0-9]+(?:[.,][0-9]{1,2})?", raw_value):
+        normalized = raw_value.replace(",", ".")
+    else:
+        raise GippoPageError("The cabinet returned an invalid numeric value")
     try:
         return Decimal(normalized)
     except InvalidOperation as exc:

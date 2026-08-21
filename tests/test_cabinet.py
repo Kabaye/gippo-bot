@@ -39,6 +39,53 @@ def test_parse_personal_page_accepts_grouped_values() -> None:
     assert status.until_next_level == Decimal("2252.73")
 
 
+@pytest.mark.parametrize(
+    ("raw_purchases", "expected_purchases"),
+    (
+        ("1,022", Decimal("1022")),
+        ("1,022.45", Decimal("1022.45")),
+        ("1.022", Decimal("1022")),
+        ("1.022,45", Decimal("1022.45")),
+        ("1\u202f022,45", Decimal("1022.45")),
+    ),
+)
+def test_parse_personal_page_accepts_punctuated_thousands(
+    raw_purchases: str, expected_purchases: Decimal
+) -> None:
+    html = f"""
+    Ваша текущая скидка 1%
+    Ваши покупки в этом месяце {raw_purchases}
+    До следующего уровня осталось 0.00
+    """
+
+    status = parse_personal_page(html)
+
+    assert status.monthly_purchases == expected_purchases
+    assert status.until_next_level == Decimal("0.00")
+
+
+@pytest.mark.parametrize(
+    "raw_purchases",
+    (
+        "1,2.34",
+        "1.23,4",
+        "12 34,56",
+        "1,234.",
+        "1,234.56,",
+        "1.234,56.",
+    ),
+)
+def test_parse_personal_page_rejects_malformed_grouping(raw_purchases: str) -> None:
+    html = f"""
+    Ваша текущая скидка 1%
+    Ваши покупки в этом месяце {raw_purchases}
+    До следующего уровня осталось 0.00
+    """
+
+    with pytest.raises(GippoPageError, match="invalid numeric value"):
+        parse_personal_page(html)
+
+
 def test_parse_personal_page_rejects_missing_value() -> None:
     with pytest.raises(GippoPageError, match="monthly_purchases"):
         parse_personal_page("Ваша текущая скидка 1%")
